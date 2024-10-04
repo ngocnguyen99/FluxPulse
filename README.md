@@ -1,5 +1,5 @@
 # FluxPulse
-FluxPulse detects and bias-corrects rain-induced CO2 pulses from eddy-covariance flux data across global drylands. <br>
+FluxPulse detects and bias-corrects rain-induced carbon pulses from eddy-covariance flux data across global drylands. <br>
 
 FluxPulse version 1.0 focuses on 34 global dryland sites, whose IGBP vegetation types belonging to Grasslands (GRA), Savannas (SAV), Open Shrublands (OSH), Closed Shrublands (CSH), and Woody Savannas (WSA). <br>
 Site locations and general characteristics could be found in https://fluxnet.org/. <be>
