@@ -17,5 +17,5 @@ To download FluxPulse v1.0 bias-corrected datasets, go to this link: https://www
 To apply FluxPulse v1.0 algorithm into your data, either refer to our codes or fill out this request form to submit your data for customized processing: 
 
 # Report potential errors/bugs
-To report errors or bugs, please create GitHub pull requests or contact the corresponding authors (Ngoc Nguyen (ngoc.nguyen@berkeley.edu) and Trevor F. Keenan (trevorkeenan@berkeley.edu))
+To report errors/bugs or inquire about the datasets, please create GitHub pull requests or contact the corresponding authors (Ngoc Nguyen (ngoc.nguyen@berkeley.edu) and Trevor F. Keenan (trevorkeenan@berkeley.edu))
 
