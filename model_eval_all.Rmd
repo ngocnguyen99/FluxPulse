@@ -1,0 +1,869 @@
+---
+title: "Temp-regression"
+author: "Ngoc Nguyen"
+date: "2023-03-06"
+output: html_document
+---
+
+##Setup functions and libraries
+```{r setup, include=FALSE}
+source("Functions_for_Spectral_Clustering.R")
+library(ggpattern)
+library(Metrics)
+library(reshape2)
+
+rmse <- function(predicted_values, actual_values) {
+  return(sqrt(mean((predicted_values - actual_values)^2)))
+}
+
+library(foreach)
+library(doParallel)
+
+# Register the parallel backend
+no_cores <- detectCores() - 1
+registerDoParallel(cores = no_cores)
+
+C_per <- function(x, y) {
+  return((sum(x) - sum(y))/sum(x)*100)
+}
+```
+
+##Folder directory
+```{r}
+df_manual <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/Birch effect Manual Label - shortcut.csv")
+df_manual$SOP <- as.Date(df_manual$SOP)
+df_manual$EOP <- as.Date(df_manual$EOP)
+
+dff <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/DML_NN_testing/results_34sites.csv")
+
+
+# index_remove <- c(which(df_manual$SITE_ID == "US-Jo2" & as.character(df_manual$SOP) %in% c("2018-06-15", "2018-02-15", "2018-09-05")),
+# which(df_manual$SITE_ID == "US-Rws" & as.character(df_manual$SOP) %in% c("2017-01-04")),
+# which(df_manual$SITE_ID == "US-SRG" & as.character(df_manual$SOP) %in% c("2021-07-01")),
+# which(df_manual$SITE_ID == "US-Ton" & as.character(df_manual$SOP) %in% c("2003-10-30")),
+# which(df_manual$SITE_ID == "US-Var" & as.character(df_manual$SOP) %in% c("2014-02-07", "2016-10-15", "2006-11-02", "2007-10-10")),
+# which(df_manual$SITE_ID == "US-Whs" & as.character(df_manual$SOP) %in% c("2019-01-01", "2018-06-14")),
+# which(df_manual$SITE_ID == "US-Wjs" & as.character(df_manual$SOP) %in% c("2011-02-01")))
+# 
+# 
+# df_manual <- df_manual[-index_remove,]
+
+```
+
+
+
+```{r}
+DML_default <- "/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/ngoc_partitions_4/DML_default/"
+#DML_EF_PERA <- "/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/ngoc_partitions_4/DML_PERA_EF_2/"
+
+NN_default <- "/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/ngoc_partitions_4/NN_default/"
+#NN_EF_PERA <- "/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/ngoc_partitions_4/NN_PERA_EF_2/"
+
+ori_dir <- "/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Datasets/FluxPulse-68-pre-pulse-no-overlap/"
+
+```
+
+#Editted code - August 18
+```{r}
+#list the files
+DML_default_file_list <- list.files(DML_default)
+NN_default_file_list <- list.files(NN_default)
+ori_dir_file_list <- list.files(ori_dir)
+
+metric_list <- foreach(i = 1:17, .packages = c("dplyr"), .combine = 'rbind') %dopar% {
+
+  DML_default_file_path <- paste(DML_default, DML_default_file_list[i], sep = "")
+  NN_default_file_path <- paste(NN_default, NN_default_file_list[i], sep = "")
+  ori_dir_file_path <- paste(ori_dir, ori_dir_file_list[i], sep = "")
+  
+  site_name <- substr(DML_default_file_list[i], start = 1, stop = 6)
+
+  DML_default_df <- read.csv(DML_default_file_path)
+  DML_default_df$DateTime <-  as.POSIXct(DML_default_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  NN_default_df <- read.csv(NN_default_file_path)
+  NN_default_df$DateTime <- as.POSIXct(NN_default_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  ori_df <- read.csv(ori_dir_file_path)
+  ori_df$Time_full <- as.POSIXct(ori_df$Time_full, format = "%Y-%m-%d %H:%M:%S") 
+  #ori_df$RECO_pulse <- ori_df$RECO_pulse_t
+
+  NN_default_df$Time_full <- NN_default_df$DateTime - 15*60
+  DML_default_df$Time_full <- DML_default_df$DateTime - 15*60
+
+  #merging ML datasets with original Half-hourly dataset
+  
+  DML_default_df_merge <- list(DML_default_df, ori_df) %>% reduce(full_join, by = "Time_full")
+  NN_default_df_merge <- list(NN_default_df, ori_df) %>% reduce(full_join, by = "Time_full")
+
+  DML_default_df_merge$Time <- as.Date(DML_default_df_merge$Time_full)
+  NN_default_df_merge$Time <- as.Date(NN_default_df_merge$Time_full)
+
+  DML_default_df_merge <- subset(DML_default_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999)
+  NN_default_df_merge <- subset(NN_default_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999)
+
+ pulse_df <- subset(df_manual, SITE_ID == site_name)
+
+ all_pulse_day <- c()
+ for(j in 1:nrow(pulse_df)) {
+   all_pulse_day <- append(all_pulse_day, pulse_df$SOP[j]:pulse_df$EOP[j])
+ }
+
+  ###############RECO/GPP pulse
+   DML_default_df_merge_sub <- (subset(DML_default_df_merge, Time %in% all_pulse_day)[, c("Time_full", "RECO_pulse", "RECO_fit_0", "GPP_0", "RECO_NT_VUT_REF", "RECO_DT_VUT_REF", "NEE_VUT_REF", "GPP_NT_VUT_REF", "GPP_DT_VUT_REF")])
+   colnames(DML_default_df_merge_sub) <- c("Time_full", "RECO_pulse", "RECO_DML", "GPP_DML", "RECO_NT", "RECO_DT", "NEE", "GPP_NT", "GPP_DT")
+   DML_default_df_merge_sub$GPP_pulse <- DML_default_df_merge_sub$RECO_pulse - DML_default_df_merge_sub$NEE
+
+  NN_default_df_merge_sub <- (subset(NN_default_df_merge, Time %in% all_pulse_day)[, c("Time_full", "RECO_0", "GPP_0")])
+  colnames(NN_default_df_merge_sub) <- c("Time_full", "RECO_NN", "GPP_NN")
+
+  merge_df <- na.omit(list(DML_default_df_merge_sub, NN_default_df_merge_sub) %>% reduce(full_join, by = "Time_full"))
+
+  #C_per
+  C_per_NT_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_NT)
+  C_per_DT_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_DT)
+
+  C_per_DML_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_DML)
+
+  C_per_NN_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_NN)
+
+  C_per_NT_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_NT)
+  C_per_DT_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_DT)
+
+  C_per_DML_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_DML)
+
+  C_per_NN_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_NN)
+
+  #################RECO/GPP Annual
+  DML_default_df_merge_full <- DML_default_df_merge[, c("Time_full", "RECO_pulse", "RECO_fit_0", "GPP_0", "RECO_NT_VUT_REF", "RECO_DT_VUT_REF", "NEE_VUT_REF", "GPP_NT_VUT_REF", "GPP_DT_VUT_REF")]
+  colnames(DML_default_df_merge_full) <- c("Time_full", "RECO_pulse", "RECO_DML", "GPP_DML", "RECO_NT", "RECO_DT", "NEE", "GPP_NT", "GPP_DT")
+  DML_default_df_merge_full$GPP_pulse <- DML_default_df_merge_full$RECO_pulse - DML_default_df_merge_full$NEE
+
+  NN_default_df_merge_full <- NN_default_df_merge[, c("Time_full", "RECO_0", "GPP_0")]
+  colnames(NN_default_df_merge_full) <- c("Time_full", "RECO_NN", "GPP_NN")
+
+  merge_df_full <- na.omit(list(
+    DML_default_df_merge_full, 
+                                NN_default_df_merge_full
+                                ) %>% reduce(full_join, by = "Time_full"))
+
+  #C_per
+  C_per_NT_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_NT)
+  C_per_DT_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_DT)
+
+  C_per_DML_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_DML)
+
+  C_per_NN_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_NN)
+
+  C_per_NT_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_NT)
+  C_per_DT_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_DT)
+
+  C_per_DML_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_DML)
+
+  C_per_NN_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_NN)
+
+  metric <- c(site_name, 
+              C_per_NT_RECO_pulse, C_per_DT_RECO_pulse, C_per_DML_RECO_pulse, C_per_NN_RECO_pulse,
+   C_per_NT_GPP_pulse, C_per_DT_GPP_pulse, C_per_DML_GPP_pulse, C_per_NN_GPP_pulse,
+  C_per_NN_RECO_full, C_per_NN_GPP_full, 
+  C_per_NT_RECO_full, C_per_DT_RECO_full, C_per_DML_RECO_full,
+  C_per_NT_GPP_full, C_per_DT_GPP_full, C_per_DML_GPP_full
+   )
+
+   return(metric)
+}
+
+```
+
+```{r}
+#list the files
+DML_default_file_list <- list.files(DML_default)
+DML_EF_PERA_file_list <- list.files(DML_EF_PERA)
+NN_default_file_list <- list.files(NN_default)
+NN_EF_PERA_file_list <- list.files(NN_EF_PERA)
+ori_dir_file_list <- list.files(ori_dir)
+
+metric_list <- foreach(i = 1:17, .packages = c("dplyr"), .combine = 'rbind') %dopar% {
+
+  DML_default_file_path <- paste(DML_default, DML_default_file_list[i], sep = "")
+  DML_EF_PERA_file_path <- paste(DML_EF_PERA, DML_EF_PERA_file_list[i], sep = "")
+  NN_default_file_path <- paste(NN_default, NN_default_file_list[i], sep = "")
+  NN_EF_PERA_file_path <- paste(NN_EF_PERA, NN_EF_PERA_file_list[i], sep = "")
+  ori_dir_file_path <- paste(ori_dir, ori_dir_file_list[i], sep = "")
+  
+  
+  site_name <- substr(DML_default_file_list[i], start = 1, stop = 6)
+
+  DML_default_df <- read.csv(DML_default_file_path)
+  DML_default_df$DateTime <-  as.POSIXct(DML_default_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  DML_EF_PERA_df <- read.csv(DML_EF_PERA_file_path)
+  DML_EF_PERA_df$DateTime <- as.POSIXct(DML_EF_PERA_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  NN_default_df <- read.csv(NN_default_file_path)
+  NN_default_df$DateTime <- as.POSIXct(NN_default_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  NN_EF_PERA_df <- read.csv(NN_EF_PERA_file_path)
+  NN_EF_PERA_df$DateTime <- as.POSIXct(NN_EF_PERA_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  ori_df <- read.csv(ori_dir_file_path)
+  ori_df$Time_full <- as.POSIXct(ori_df$Time_full, format = "%Y-%m-%d %H:%M:%S") 
+  
+  DML_default_df$Time_full <- DML_default_df$DateTime - 15*60
+  DML_EF_PERA_df$Time_full <- DML_EF_PERA_df$DateTime - 15*60
+  NN_default_df$Time_full <- NN_default_df$DateTime - 15*60
+  NN_EF_PERA_df$Time_full <- NN_EF_PERA_df$DateTime - 15*60
+  # 
+  #merging ML datasets with original Half-hourly dataset
+  
+  DML_default_df_merge <- list(DML_default_df, ori_df) %>% reduce(full_join, by = "Time_full")
+  DML_EF_PERA_df_merge <- list(DML_EF_PERA_df, ori_df) %>% reduce(full_join, by = "Time_full")
+  NN_default_df_merge <- list(NN_default_df, ori_df) %>% reduce(full_join, by = "Time_full")
+  NN_EF_PERA_df_merge <- list(NN_EF_PERA_df, ori_df) %>% reduce(full_join, by = "Time_full")
+
+  DML_default_df_merge$Time <- as.Date(DML_default_df_merge$Time_full)
+  DML_EF_PERA_df_merge$Time <- as.Date(DML_EF_PERA_df_merge$Time_full)
+  NN_default_df_merge$Time <- as.Date(NN_default_df_merge$Time_full)
+  NN_EF_PERA_df_merge$Time <- as.Date(NN_EF_PERA_df_merge$Time_full)
+
+  DML_default_df_merge <- subset(DML_default_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999)
+  DML_EF_PERA_df_merge <- subset(DML_EF_PERA_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999)
+  NN_default_df_merge <- subset(NN_default_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999)
+  NN_EF_PERA_df_merge <- subset(NN_EF_PERA_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999)
+
+pulse_df <- subset(df_manual, SITE_ID == site_name)
+
+all_pulse_day <- c()
+for(j in 1:nrow(pulse_df)) {
+  all_pulse_day <- append(all_pulse_day, pulse_df$SOP[j]:pulse_df$EOP[j])
+}
+
+################RECO/GPP pulse
+  DML_default_df_merge_sub <- (subset(DML_default_df_merge, Time %in% all_pulse_day)[, c("Time_full", "RECO_pulse", "RECO_fit_0", "GPP_0", "RECO_NT_VUT_REF", "RECO_DT_VUT_REF", "NEE_VUT_REF", "GPP_NT_VUT_REF", "GPP_DT_VUT_REF")])
+  colnames(DML_default_df_merge_sub) <- c("Time_full", "RECO_pulse", "RECO_DML", "GPP_DML", "RECO_NT", "RECO_DT", "NEE", "GPP_NT", "GPP_DT")
+  DML_default_df_merge_sub$GPP_pulse <- DML_default_df_merge_sub$RECO_pulse - DML_default_df_merge_sub$NEE
+  #
+  DML_EF_PERA_df_merge_sub <- (subset(DML_EF_PERA_df_merge, Time %in% all_pulse_day)[, c("Time_full", "RECO_fit_0", "GPP_0")])
+  colnames(DML_EF_PERA_df_merge_sub) <- c("Time_full", "RECO_DML_v2", "GPP_DML_v2")
+
+  NN_default_df_merge_sub <- (subset(NN_default_df_merge, Time %in% all_pulse_day)[, c("Time_full", "RECO_0", "GPP_0")])
+  colnames(NN_default_df_merge_sub) <- c("Time_full", "RECO_NN", "GPP_NN")
+  #
+  NN_EF_PERA_df_merge_sub <- (subset(NN_EF_PERA_df_merge, Time %in% all_pulse_day)[, c("Time_full", "RECO_0", "GPP_0")])
+  colnames(NN_EF_PERA_df_merge_sub) <- c("Time_full", "RECO_NN_v2", "GPP_NN_v2")
+  #
+  merge_df <- na.omit(list(DML_default_df_merge_sub, DML_EF_PERA_df_merge_sub, NN_default_df_merge_sub, NN_EF_PERA_df_merge_sub) %>% reduce(full_join, by = "Time_full"))
+#
+  ##C_per
+  C_per_NT_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_NT)
+  C_per_DT_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_DT)
+  #
+  C_per_DML_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_DML)
+  C_per_DML_v2_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_DML_v2)
+
+  C_per_NN_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_NN)
+  C_per_NN_v2_RECO_pulse <- C_per(merge_df$RECO_pulse, merge_df$RECO_NN_v2)
+
+  C_per_NT_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_NT)
+  C_per_DT_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_DT)
+
+  C_per_DML_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_DML)
+  C_per_DML_v2_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_DML_v2)
+
+  C_per_NN_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_NN)
+  C_per_NN_v2_GPP_pulse <- C_per(merge_df$GPP_pulse, merge_df$GPP_NN_v2)
+
+  #   #################RECO/GPP Annual
+  DML_default_df_merge_full <- DML_default_df_merge[, c("Time_full", "RECO_pulse", "RECO_fit_0", "GPP_0", "RECO_NT_VUT_REF", "RECO_DT_VUT_REF", "NEE_VUT_REF", "GPP_NT_VUT_REF", "GPP_DT_VUT_REF")]
+  colnames(DML_default_df_merge_full) <- c("Time_full", "RECO_pulse", "RECO_DML", "GPP_DML", "RECO_NT", "RECO_DT", "NEE", "GPP_NT", "GPP_DT")
+  DML_default_df_merge_full$GPP_pulse <- DML_default_df_merge_full$RECO_pulse - DML_default_df_merge_full$NEE
+
+  DML_EF_PERA_df_merge_full <- DML_EF_PERA_df_merge[, c("Time_full", "RECO_fit_0", "GPP_0")]
+  colnames(DML_EF_PERA_df_merge_full) <- c("Time_full", "RECO_DML_v2", "GPP_DML_v2")
+
+  NN_default_df_merge_full <- NN_default_df_merge[, c("Time_full", "RECO_0", "GPP_0")]
+  colnames(NN_default_df_merge_full) <- c("Time_full", "RECO_NN", "GPP_NN")
+  #NN_default_df_merge_full$GPP_pulse <- NN_default_df_merge_full$RECO_pulse - NN_default_df_merge_full$NEE
+  #
+  NN_EF_PERA_df_merge_full <- NN_EF_PERA_df_merge[, c("Time_full", "RECO_0", "GPP_0")]
+  colnames(NN_EF_PERA_df_merge_full) <- c("Time_full", "RECO_NN_v2", "GPP_NN_v2")
+
+  merge_df_full <- na.omit(list(
+    DML_default_df_merge_full, DML_EF_PERA_df_merge_full,
+                                NN_default_df_merge_full, NN_EF_PERA_df_merge_full
+                                ) %>% reduce(full_join, by = "Time_full"))
+
+  #C_per
+  C_per_NT_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_NT)
+  C_per_DT_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_DT)
+
+  C_per_DML_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_DML)
+  C_per_DML_v2_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_DML_v2)
+
+C_per_NN_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_NN)
+C_per_NN_v2_RECO_full <- C_per(merge_df_full$RECO_pulse, merge_df_full$RECO_NN_v2)
+
+  C_per_NT_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_NT)
+  C_per_DT_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_DT)
+
+  C_per_DML_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_DML)
+  C_per_DML_v2_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_DML_v2)
+
+  C_per_NN_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_NN)
+  C_per_NN_v2_GPP_full <- C_per(merge_df_full$GPP_pulse, merge_df_full$GPP_NN_v2)
+
+#
+  metric <- c(site_name, 
+              C_per_NT_RECO_pulse, C_per_DT_RECO_pulse, C_per_DML_RECO_pulse, C_per_DML_v2_RECO_pulse, C_per_NN_RECO_pulse, C_per_NN_v2_RECO_pulse,
+   C_per_NT_GPP_pulse, C_per_DT_GPP_pulse, C_per_DML_GPP_pulse, C_per_DML_v2_GPP_pulse, C_per_NN_GPP_pulse, C_per_NN_v2_GPP_pulse
+  ,
+  C_per_NN_RECO_full, C_per_NN_v2_RECO_full, C_per_NN_GPP_full, C_per_NN_v2_GPP_full,
+  C_per_NT_RECO_full, C_per_DT_RECO_full, C_per_DML_RECO_full, C_per_DML_v2_RECO_full,
+  C_per_NT_GPP_full, C_per_DT_GPP_full, C_per_DML_GPP_full, C_per_DML_v2_GPP_full
+   )
+
+   return(metric)
+  
+}
+
+
+```
+
+#Validating against Nighttime NEE
+```{r}
+#list the files
+DML_default_file_list <- list.files(DML_default)
+DML_EF_PERA_file_list <- list.files(DML_EF_PERA)
+NN_default_file_list <- list.files(NN_default)
+NN_EF_PERA_file_list <- list.files(NN_EF_PERA)
+ori_dir_file_list <- list.files(ori_dir)
+
+metric_list <- foreach(i = 18:34, .packages = c("dplyr"), .combine = 'rbind') %dopar% {
+
+  # DML_default_file_path <- paste(DML_default, DML_default_file_list[i], sep = "")
+  # DML_EF_PERA_file_path <- paste(DML_EF_PERA, DML_EF_PERA_file_list[i], sep = "")
+  NN_default_file_path <- paste(NN_default, NN_default_file_list[i], sep = "")
+  NN_EF_PERA_file_path <- paste(NN_EF_PERA, NN_EF_PERA_file_list[i], sep = "")
+  ori_dir_file_path <- paste(ori_dir, ori_dir_file_list[i], sep = "")
+  
+  
+  site_name <- substr(DML_default_file_list[i], start = 1, stop = 6)
+
+  # DML_default_df <- read.csv(DML_default_file_path)
+  # DML_default_df$DateTime <-  as.POSIXct(DML_default_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+  # 
+  # DML_EF_PERA_df <- read.csv(DML_EF_PERA_file_path)
+  # DML_EF_PERA_df$DateTime <- as.POSIXct(DML_EF_PERA_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+# 
+  NN_default_df <- read.csv(NN_default_file_path)
+  NN_default_df$DateTime <- as.POSIXct(NN_default_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  NN_EF_PERA_df <- read.csv(NN_EF_PERA_file_path)
+  NN_EF_PERA_df$DateTime <- as.POSIXct(NN_EF_PERA_df$DateTime, format = "%Y-%m-%d %H:%M:%S")
+
+  ori_df <- read.csv(ori_dir_file_path)
+  ori_df$Time_full <- as.POSIXct(ori_df$Time_full, format = "%Y-%m-%d %H:%M:%S") 
+
+  # DML_default_df$Time_full <- DML_default_df$DateTime - 15*60
+  # DML_EF_PERA_df$Time_full <- DML_EF_PERA_df$DateTime - 15*60
+  NN_default_df$Time_full <- NN_default_df$DateTime - 15*60
+  NN_EF_PERA_df$Time_full <- NN_EF_PERA_df$DateTime - 15*60
+
+  #merging ML datasets with original Half-hourly dataset
+
+  # DML_default_df_merge <- list(DML_default_df, ori_df) %>% reduce(full_join, by = "Time_full")
+  # DML_EF_PERA_df_merge <- list(DML_EF_PERA_df, ori_df) %>% reduce(full_join, by = "Time_full")
+  NN_default_df_merge <- list(NN_default_df, ori_df) %>% reduce(full_join, by = "Time_full")
+  NN_EF_PERA_df_merge <- list(NN_EF_PERA_df, ori_df) %>% reduce(full_join, by = "Time_full")
+
+  # DML_default_df_merge$Time <- as.Date(DML_default_df_merge$Time_full)
+  # DML_EF_PERA_df_merge$Time <- as.Date(DML_EF_PERA_df_merge$Time_full)
+  NN_default_df_merge$Time <- as.Date(NN_default_df_merge$Time_full)
+  NN_EF_PERA_df_merge$Time <- as.Date(NN_EF_PERA_df_merge$Time_full)
+
+  # DML_default_df_merge <- subset(DML_default_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999 & NIGHT == 1)
+  # DML_EF_PERA_df_merge <- subset(DML_EF_PERA_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999 & NIGHT == 1)
+  NN_default_df_merge <- subset(NN_default_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999  & NIGHT == 1)
+  NN_EF_PERA_df_merge <- subset(NN_EF_PERA_df_merge, NEE_VUT_REF_QC == 0 & RECO_NT_VUT_REF > -9999 & RECO_DT_VUT_REF > -9999  & NIGHT == 1)
+ # 
+ 
+  pulse_df <- subset(df_manual, SITE_ID == site_name)
+
+ all_pulse_day <- c()
+ for(j in 1:nrow(pulse_df)) {
+   all_pulse_day <- append(all_pulse_day, pulse_df$SOP[j]:pulse_df$EOP[j])
+ }
+
+################RECO/GPP pulse
+  # DML_default_df_merge_sub <- (subset(DML_default_df_merge, Time %in% all_pulse_day)[, c("Time", "Time_full", "RECO_pulse", "RECO_fit_0", "RECO_NT_VUT_REF", "RECO_DT_VUT_REF", "NEE_VUT_REF")])
+  # colnames(DML_default_df_merge_sub) <- c("Time", "Time_full", "RECO_pulse", "RECO_DML",  "RECO_NT", "RECO_DT", "NEE")
+  # DML_EF_PERA_df_merge_sub <- (subset(DML_EF_PERA_df_merge, Time %in% all_pulse_day)[, c("Time", "Time_full", "RECO_fit_0")])
+  # colnames(DML_EF_PERA_df_merge_sub) <- c("Time", "Time_full", "RECO_DML_v2")
+
+  NN_default_df_merge_sub <- (subset(NN_default_df_merge, Time %in% all_pulse_day)[, c("Time", "Time_full", "RECO_0", "NEE_VUT_REF")])
+  colnames(NN_default_df_merge_sub) <- c("Time", "Time_full", "RECO_NN", "NEE")
+  #
+  NN_EF_PERA_df_merge_sub <- (subset(NN_EF_PERA_df_merge, Time %in% all_pulse_day)[, c("Time", "Time_full", "RECO_0")])
+  colnames(NN_EF_PERA_df_merge_sub) <- c("Time", "Time_full", "RECO_NN_v2")
+
+  merge_df <- na.omit(list(
+    #DML_default_df_merge_sub, DML_EF_PERA_df_merge_sub,
+                                   NN_default_df_merge_sub, NN_EF_PERA_df_merge_sub)
+                                   %>% reduce(full_join, by = "Time_full"))
+#%>% group_by(Time) %>% filter(n() >= 5)
+  ##C_per
+  # C_per_NT_RECO_pulse <- C_per(merge_df$NEE, merge_df$RECO_NT)
+  # C_per_DT_RECO_pulse <- C_per(merge_df$NEE, merge_df$RECO_DT)
+  # #
+  # C_per_DML_RECO_pulse <- C_per(merge_df$NEE, merge_df$RECO_DML)
+  # C_per_DML_v2_RECO_pulse <- C_per(merge_df$NEE, merge_df$RECO_DML_v2)
+
+  C_per_NN_RECO_pulse <- C_per(merge_df$NEE, merge_df$RECO_NN)
+  C_per_NN_v2_RECO_pulse <- C_per(merge_df$NEE, merge_df$RECO_NN_v2)
+
+#   #   #################RECO/GPP Annual
+#   DML_default_df_merge_full <- DML_default_df_merge[, c("Time", "Time_full", "RECO_pulse", "RECO_fit_0", "RECO_NT_VUT_REF", "RECO_DT_VUT_REF", "NEE_VUT_REF")]
+#   colnames(DML_default_df_merge_full) <- c("Time", "Time_full", "RECO_pulse", "RECO_DML", "RECO_NT", "RECO_DT", "NEE")
+# 
+#   DML_EF_PERA_df_merge_full <- DML_EF_PERA_df_merge[, c("Time", "Time_full", "RECO_fit_0")]
+#   colnames(DML_EF_PERA_df_merge_full) <- c("Time", "Time_full", "RECO_DML_v2")
+# #
+  NN_default_df_merge_full <- NN_default_df_merge[, c("Time", "Time_full", "RECO_0", "NEE_VUT_REF")]
+  colnames(NN_default_df_merge_full) <- c("Time", "Time_full", "RECO_NN", "NEE")
+
+  NN_EF_PERA_df_merge_full <- NN_EF_PERA_df_merge[, c("Time", "Time_full", "RECO_0")]
+  colnames(NN_EF_PERA_df_merge_full) <- c("Time", "Time_full", "RECO_NN_v2")
+
+  merge_df_full <- na.omit(list(
+    #DML_default_df_merge_full, DML_EF_PERA_df_merge_full
+                                NN_default_df_merge_full, NN_EF_PERA_df_merge_full
+                                ) %>% reduce(full_join, by = "Time_full"))
+  #%>% group_by(Time) %>% filter(n() >= 5)
+  # C_per_NT_RECO_full <- C_per(merge_df_full$NEE, merge_df_full$RECO_NT)
+  # C_per_DT_RECO_full <- C_per(merge_df_full$NEE, merge_df_full$RECO_DT)
+  # 
+  # C_per_DML_RECO_full <- C_per(merge_df_full$NEE, merge_df_full$RECO_DML)
+  # C_per_DML_v2_RECO_full <- C_per(merge_df_full$NEE, merge_df_full$RECO_DML_v2)
+#
+  C_per_NN_RECO_full <- C_per(merge_df_full$NEE, merge_df_full$RECO_NN)
+  C_per_NN_v2_RECO_full <- C_per(merge_df_full$NEE, merge_df_full$RECO_NN_v2)
+
+  metric <- c(site_name, 
+  #             C_per_NT_RECO_pulse, C_per_DT_RECO_pulse, C_per_DML_ RECO_pulse, C_per_DML_v2_RECO_pulse
+  C_per_NN_RECO_pulse, C_per_NN_v2_RECO_pulse,
+  C_per_NN_RECO_full, C_per_NN_v2_RECO_full
+  #C_per_NT_RECO_full, C_per_DT_RECO_full, C_per_DML_RECO_full, C_per_DML_v2_RECO_full
+   )
+   return(metric)
+  
+}
+
+```
+
+```{r} 
+df_sub <- data.frame(metric_list)
+colnames(df_sub) <- c("SITE_ID", 
+              "C_per_NT_RECO_pulse", "C_per_DT_RECO_pulse", "C_per_DML_RECO_pulse", "C_per_NN_RECO_pulse",
+   "C_per_NT_GPP_pulse", "C_per_DT_GPP_pulse", "C_per_DML_GPP_pulse", "C_per_NN_GPP_pulse",
+  "C_per_NN_RECO_full", "C_per_NN_GPP_full", 
+  "C_per_NT_RECO_full", "C_per_DT_RECO_full", "C_per_DML_RECO_full",
+  "C_per_NT_GPP_full", "C_per_DT_GPP_full", "C_per_DML_GPP_full"
+  )
+write.csv(df_sub, "/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/DML_NN_testing/results_1-17_model_68_pre-pulse_Oct11.csv")
+
+```
+
+
+#merge all df together
+```{r}
+df_1 <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/DML_NN_testing/results_1-17_model_68_pre-pulse_Oct11.csv")
+df_2 <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/DML_NN_testing/results_18-34_model_68_pre-pulse_Oct11.csv")
+
+df_combined <- rbind(df_1, df_2)
+
+write.csv(df_combined, "/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/DML_NN_testing/results_FULL_34_model_68_pre-pulse_Oct11.csv")
+
+
+```
+
+#Draw boxplot
+```{r}
+df_combined <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/DML_NN_testing/results_FULL_34_model_68_pre-pulse_Oct11.csv")
+x_df <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Datasets/decay_stat_all_site.csv")
+merge_df <- subset(x_df, ini_condition_p < 0.05 & decay_factor_p < 0.05)
+data <- subset(df_combined, !(SITE_ID %in% c("AU-Cpr", "AU-DaS", "AU-Gin", "US-FR2", "US-LS2", "US-Mpj")))
+#they are sites where fluxpulse is not significantly different from NT method p > 0.001
+# SITE_ID %in% unique(merge_df$SITE_ID)
+
+# Reshape the data from wide to long format
+data_long <- pivot_longer(data, cols = contains("RECO_pulse") | 
+                            contains("RECO_full") | contains("GPP_pulse") | 
+                            contains("GPP_full"),
+                          names_to = "Variable", values_to = "Value")
+
+# Create a group variable based on the variable names
+data_long <- data_long %>%
+  mutate(Group = case_when(
+            grepl("RECO_pulse", Variable) ~ "Pulse RECO",
+    grepl("RECO_full", Variable) ~ "Total RECO",
+    grepl("GPP_pulse", Variable) ~ "Pulse GPP",
+    grepl("GPP_full", Variable) ~ "Total GPP"
+
+  ))
+
+data_long <- data_long %>%
+  mutate(Variable_2 = case_when(
+    grepl("_NT", Variable) ~ "NT",
+    grepl("_DT", Variable) ~ "DT",
+    grepl("_NN_", Variable) ~ "NN",
+    grepl("_DML_", Variable) ~ "DML"
+  ))
+
+
+# Ensure Variable is a factor and reorder for plotting, interleave spaces or separators if needed
+data_long$Variable_2 <- factor(data_long$Variable_2, levels = unique(data_long$Variable_2))
+#data_long$Group <- factor(data_long$Group, levels = c("Pulse GPP", "Total GPP"))
+
+#Mpj, Rms
+length(unique(data_long$SITE_ID))
+```
+
+
+```{r}
+# Plot
+png("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Figures/19_sites_manual/Model_comparison_PULSE_without_v2_Oct12.png",  width     = 5,
+    height    = 4,
+    units     = "in",
+    res       = 1200,
+    pointsize = 4)
+
+# ggplot(subset(data_long, Group %in% c("Pulse RECO", "Pulse GPP")), aes(x = Group, y = Value, pattern = Variable_2)) +
+#   geom_boxplot_pattern(
+#     pattern_spacing = 0.02,
+#     fill = "white", pattern_color = "#00a087",  # Single color for all boxplots
+#     pattern_density = 0.08  # Adjust pattern density as needed
+#   ) +
+#   scale_pattern_manual(values = c("stripe", "crosshatch", "circle", "none"),  # Define patterns for each Variable_2
+#                        guide = guide_legend(override.aes = list(fill = "white", color = "black"))) +
+#   theme_bw() +  theme(
+#     axis.text.y = element_text(size = 15),
+#     axis.text.x = element_text(size = 15),
+#     axis.title.y = element_text(size = 15),
+#     axis.title.x = element_text(size = 15),
+#     legend.title = element_blank(),
+#     legend.text = element_text(size = 13),
+#     legend.key.size = unit(1, 'cm'),
+#     panel.grid.major = element_blank(), 
+#     panel.grid.minor = element_blank()
+#   ) +
+#   labs(title = "", x = "Variable", y = "C Underestimation (%)") +
+#   scale_x_discrete(expand = expansion(add = c(0.5, 0.5))) +
+#   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+#   xlab("")
+
+ggplot(subset(data_long, Group %in% c("Pulse RECO", "Pulse GPP")), 
+       aes(x = factor(Group, levels = c("Pulse RECO", "Pulse GPP")), 
+           y = Value, fill = Variable_2), color = "black") +
+  geom_boxplot(alpha = 0.5) +
+  theme_bw() +  
+  theme(
+    axis.text.y = element_text(size = 15),
+    axis.text.x = element_text(size = 15),
+    axis.title.y = element_text(size = 15),
+    axis.title.x = element_text(size = 15),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 13),
+    legend.key.size = unit(1, 'cm'),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank()
+  ) +
+  labs(title = "", x = "Variable", y = "C Underestimation (%)") +
+  scale_x_discrete(expand = expansion(add = c(0.5, 0.5))) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  xlab("") + 
+  scale_fill_manual(values=c("#3c5488", "#00a087", "gray50", "white")) +
+  stat_summary(aes(group = interaction(Group, Variable_2)), fun = mean, geom = "point", shape = 23, size = 1.5, color = "red", fill = "red", position = position_dodge(width = 0.75))
+
+dev.off()
+
+```
+
+#scater plot between variables
+
+```{r}
+data_long_NN <- subset(data_long, Variable_2 == "NN" & Group == "Pulse RECO")
+data_long_NT <- subset(data_long, Variable_2 == "NT" & Group == "Pulse RECO")
+
+data_merge <- merge(data_long_NT, data_long_NN, by = "SITE_ID")
+colnames(data_merge)
+ggplot(data_merge, aes(Value.x, Value.y )) + geom_point() + theme_bw() + geom_abline() +
+  ylab("NN") + xlab("NT")  + geom_text_repel(aes(label = as.factor(SITE_ID)))
+
+```
+
+
+
+
+#calculate t-test
+```{r}
+#Different than 0combine_df_sub1
+combine_df_sub1 <- subset(data_long, Variable_2 == "NT" & Group == "Total GPP")
+combine_df_sub2 <- subset(data_long, Variable_2 == "DT" & Group == "Total GPP")
+combine_df_sub3 <- subset(data_long, Variable_2 == "DML" & Group == "Total GPP")
+combine_df_sub4 <- subset(data_long, Variable_2 == "NN" & Group == "Total GPP")
+
+t.test(combine_df_sub1$Value, combine_df_sub2$Value, paired = TRUE, alternative = "less")
+t.test(combine_df_sub1$Value, combine_df_sub3$Value, paired = TRUE, alternative = "less")
+t.test(combine_df_sub2$Value, combine_df_sub3$Value, paired = TRUE, alternative = "less")
+t.test(combine_df_sub1$Value, combine_df_sub4$Value, paired = TRUE, alternative = "less")
+t.test(combine_df_sub3$Value, combine_df_sub4$Value, paired = TRUE, alternative = "less")
+t.test(combine_df_sub4$Value, combine_df_sub2$Value, paired = TRUE, alternative = "less")
+
+t.test(combine_df_sub1$Value, combine_df_sub2$Value, paired = TRUE, alternative = "greater")
+t.test(combine_df_sub1$Value, combine_df_sub3$Value, paired = TRUE, alternative = "greater")
+t.test(combine_df_sub2$Value, combine_df_sub3$Value, paired = TRUE, alternative = "greater")
+t.test(combine_df_sub1$Value, combine_df_sub4$Value, paired = TRUE, alternative = "greater")
+t.test(combine_df_sub3$Value, combine_df_sub4$Value, paired = TRUE, alternative = "greater")
+t.test(combine_df_sub4$Value, combine_df_sub2$Value, paired = TRUE, alternative = "greater")
+
+```
+
+```{r}
+
+#Different than 0 
+combine_df_sub1 <- subset(data_long_sub, Variable_2 == "NT" & Group == "Total RECO")
+combine_df_sub2 <- subset(data_long_sub, Variable_2 == "DT" & Group == "Total RECO")
+combine_df_sub3 <- subset(data_long_sub, Variable_2 == "DML" & Group == "Total RECO")
+combine_df_sub4 <- subset(data_long_sub, Variable_2 == "NN" & Group == "Total RECO")
+
+t.test(combine_df_sub1$Value, mu = 0, alernative = "greater")
+t.test(combine_df_sub2$Value, mu = 0, alernative = "greater")
+t.test(combine_df_sub3$Value, mu = 0, alernative = "greater")
+t.test(combine_df_sub4$Value, mu = 0, alernative = "greater")
+```
+
+```{r}
+
+#margin of error
+
+# Install and load the boot package
+library(boot)
+# Step 2: Define function to calculate the mean
+mean_stat <- function(data, indices) {
+  return(mean(data[indices]))
+}
+
+# Step 3: Perform bootstrapping with 1000 resamples# Step 1: Create example data
+set.seed(123)
+data_sub = data$C_per_NN_GPP_full
+boot_result <- boot(data = data_sub, statistic = mean_stat, R = 1000)
+
+# Step 4: Calculate and print bootstrapped confidence intervals
+boot_ci <- boot.ci(boot_result, type = "perc")  # Percentile CI
+print(boot_ci)
+
+mean(data_sub)
+(3.563 - 8.420)/2
+#NT_RECO_pulse: 22.9 +- 10.7
+#DT_RECO_pulse: 26.7 +- 9.0
+#DML_RECO_pulse: 17.9 +- 9.7
+#NN_RECO_pulse: 13.4 +- 9.4
+
+13.4 +- 9.4  26.7 +- 9.0
+
+#GPP Pulse: 33.8 
+#NT: 33.8 +- 14.2
+#DT: 17.8 +- 11.7
+#DML: 20.9 +- 12.4
+#NN: 18.2 +- 11.2
+
+#FULL
+#RECO: 
+#NT: 5.7 +- 3.2
+#DT: 5.4 +- 5.0
+#DML: 1.3 +- 3.2
+#NN: 4.0 +- 4.0
+
+#GPP: 
+#NT: 5.1 +- 3.2
+#DT: 5.4 +- 2.8
+#DML: 6.4 +- 2.3
+#NN: 6.1 +- 2.4
+
+
+```
+
+
+
+#Check the false sites and send to Kai 
+```{r}
+NN_default <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/ngoc_partitions_4/DML_default/US-Ton_fluxes.csv")
+NN_PERA_EF_2 <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Data/ngoc_partitions_4/DML_PERA_EF_2/US-SRG_fluxes.csv")
+ori_dir <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Datasets/DT_interpolated_datasets_all_pulse/US-SRG.csv")
+
+NN_default$DateTime <-  as.POSIXct(NN_default$DateTime, format = "%Y-%m-%d %H:%M:%S")
+NN_default$Time_full <- NN_default$DateTime - 15*60
+NN_default$Time_full <- as.character(NN_default$Time_full)
+
+NN_PERA_EF_2$DateTime <-  as.POSIXct(NN_PERA_EF_2$DateTime, format = "%Y-%m-%d %H:%M:%S")
+NN_PERA_EF_2$Time_full <- NN_PERA_EF_2$DateTime - 15*60
+NN_PERA_EF_2$Time_full <- as.character(NN_PERA_EF_2$Time_full)
+
+#colnames(NN_PERA_EF_2) <- c("DateTime", "NEE_QC_2", "GPP_2", "LUE_2", "NEE_2", "RECO_2", "Time_full")
+colnames(NN_PERA_EF_2) <- c("DateTime", "NEE_QC_2", "GPP_2", "LUE_2", "NEE_di_2", "NEE_fit_2", "RECO_di_2", "RECO_fit_2", "Time_full")
+
+df_merge <- list(NN_PERA_EF_2, NN_default, ori_dir) %>% reduce(full_join, by = "Time_full")
+
+ggplot(subset(df_merge, NEE_QC_2 ==0  & Year == 2011), 
+       aes(x = as.POSIXct(Time_full), y = NEE_VUT_REF)) + 
+    geom_point(aes(color = factor(pulse_cluster)), size = 0.2) + 
+    geom_point(aes(x = as.POSIXct(Time_full), y = RECO_pulse), color = "red", size = 0.2) +
+      geom_point(aes(x = as.POSIXct(Time_full), y = RECO_fit_0), color = "black", size = 0.2) +
+  theme_bw() + geom_abline() +
+  scale_fill_manual(values=c("#3c5488", "#00a087", "#f39b7f", "#f45b7f", "#f50b7f")) +
+  scale_color_manual(values=c("#3c5488", "#00a087", "#f39b7f", "#f45b7f", "#f50b7f"))
+
+ggplot(subset(df_merge, NEE_QC_2 ==0 &  NIGHT == 1), 
+       aes(x = RECO_NT_VUT_REF, y = NEE_VUT_REF)) + geom_point() + geom_abline() + theme_bw()
+
+subset(df_merge, NEE_QC_2 ==0 &  NIGHT == 1)$RECO_NT_VUT_REF - 
+  subset(df_merge, NEE_QC_2 ==0 &  NIGHT == 1)$NEE_VUT_REF
+```
+
+#Random forest Performance Relationship 
+```{r}
+performance <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Datasets/Random_forest/28_sites.csv")
+rela_set <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Datasets/Rela_Imp_dataset.csv")
+performance$SITE_ID <- performance$Location
+
+per_set <- list(performance, rela_set) %>% reduce(left_join, by = "SITE_ID")
+
+df = per_set[,!(names(per_set) %in% c("X.1", "X", "SITE_ID", "Location"))]
+
+cor_df <- cor(df, method = "pearson", use = "complete.obs")
+corrplot(cor_df)
+cor_df <- data.frame(cor_df)
+cor_df$F1 <- abs(cor_df$F1)
+cor_df <- cor_df[order(cor_df$F1, decreasing = TRUE), ]
+
+F1_top_var <- c("F1", "C_contribution", "Soil.pH", "ini_condition", "AI", "change_EF", "GPP", "TA", "NEP_90", "Clay", "decay_factor") #abs(r) > 0.3
+#-----------------------
+png("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Figures/19_sites_manual/Pulse_NEE_F1_RF.png",  width     = 5.5,
+    height    = 5.5,
+    units     = "in",
+    res       = 1200,
+    pointsize = 4)
+
+ggplot(per_set, aes(C_contribution, F1)) + 
+    geom_hline(yintercept = 0.4, linetype = "dashed", color = "blue") +
+    geom_point() + 
+    geom_smooth(method = "lm", se = FALSE, color = "red") +
+    theme_bw() + geom_text_repel(aes(label = SITE_ID)) +
+  ylab("F1 score") + xlab(expression("Mean Pulse Total NEE (umol "*CO[2]*" "*m^-2*s^-1*")")) +
+  theme(
+  axis.text.y = element_text(size = 15),
+  axis.text.x = element_text(size = 15),
+  axis.title.y = element_text(size = 15),
+  axis.title.x = element_text(size = 15),
+  legend.key.size = unit(1, 'cm'),
+  legend.text = element_text(size=13),
+  legend.title = element_text(size=13)) + ylim(0, 1)
+
+dev.off()
+
+summary(lm(F1 ~ C_contribution, per_set))
+cor(per_set$F1, per_set$C_contribution)
+
+subset(per_set, F1 > 0.4)
+```
+
+```{r}
+##Use relative importance to see what accounts for F1 variability
+merge_df_sub <- cor_df[, F1_top_var]
+
+result <- boot.relimp(F1 ~ ., merge_df_sub, b = 100, type = c("lmg"))
+
+rel_imp <- booteval.relimp(result, bty="bca", sort = TRUE)
+variable <- c("Pulse Total NEE", "Soil pH", "Pulse Initial NEE", "P/PET", paste("Initial ", greeks("Delta"), "EF", sep = ""), "GPP", "Tair", "NEP_90%", "Clay", "Decaying rate - k")
+value <- melt(rel_imp$lmg)$value
+stat_ini <- data.frame(variable, value)
+stat_ini$lower.CI <- rel_imp$lmg.lower[1,]
+stat_ini$upper.CI <- rel_imp$lmg.upper[1,]
+stat_ini$std <- (stat_ini$upper.CI - stat_ini$lower.CI)/2/1.96
+stat_ini <- stat_ini %>% arrange(desc(value))
+var_order <- stat_ini$variable
+
+#-------------------------
+png("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Figures/19_sites_manual/barplot_rela_F1_RF.png",  width     = 5.5,
+    height    = 5.5,
+    units     = "in",
+    res       = 1200,
+    pointsize = 4)
+ggplot(stat_ini, aes(y = value*100, x = reorder(variable, -value))) + geom_bar(stat = "identity", fill = "#f39b7f", alpha = 0.7) + 
+  geom_errorbar(aes(ymin = value*100 - std*100,
+                    ymax = value*100 + std*100),
+                width = 0.1,
+                position = position_dodge(0.7)) +
+  labs(title = paste("F1 score variance explained by all predictors: ", round(rel_imp$R2*100, 1), " %", sep = "")) +
+  theme_bw() + 
+  theme(
+  axis.text.y = element_text(size = 15),
+  axis.text.x = element_text(angle = 55, hjust = 1, size = 15),
+  axis.title.y = element_text(size = 15),
+  axis.title.x = element_text(size = 15),
+  legend.key.size = unit(1, 'cm'),
+  legend.text = element_text(size=13),
+  legend.title = element_text(size=13),
+  panel.grid.major = element_blank() , panel.grid.minor = element_blank()) +
+  xlab("Drivers") + ylab("% variance explained") 
+dev.off()
+```
+
+```{r}
+RF_imp <- read.csv("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Datasets/Random_forest/28_sites_Feature_Impo.csv")
+SITE_ID <- sum(RF_imp[-c(1:6, 8),]$X1)
+RF_imp <- RF_imp[c(1:6, 8),]
+colnames(RF_imp) <- c("Feature", "Value")
+
+RF_imp <- RF_imp %>% add_row(Feature = "SITE_ID", Value = SITE_ID)
+RF_imp$Feature <- c("Pre-pulse EF", paste("Initial ", greeks("Delta"), "EF", sep = ""),
+             "Daily EF", "SITE ID", "Month", "Reco_NT", "NEE", "Precipitation")
+
+
+#-------------------------
+png("/Users/ngocnguyen/Library/CloudStorage/Box-Box/Projects/Birch_effect_paper/Results/Figures/19_sites_manual/feature_impo_RF.png",  width     = 5.5,
+    height    = 5.5,
+    units     = "in",
+    res       = 1200,
+    pointsize = 4)
+ggplot(RF_imp, aes(y = Value, x = reorder(Feature, -Value))) + geom_bar(stat = "identity", fill = "#f45b7f", alpha = 0.7) + 
+  theme_bw() + 
+  theme(
+  axis.text.y = element_text(size = 15),
+  axis.text.x = element_text(angle = 55, hjust = 1, size = 15),
+  axis.title.y = element_text(size = 15),
+  axis.title.x = element_text(size = 15),
+  legend.key.size = unit(1, 'cm'),
+  legend.text = element_text(size=13),
+  legend.title = element_text(size=13),
+  panel.grid.major = element_blank() , panel.grid.minor = element_blank()) +
+  xlab("Input Features") + ylab("Feature Importance Score") + ylim(0, 0.3)
+dev.off()
+
+merge_df_sub
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
