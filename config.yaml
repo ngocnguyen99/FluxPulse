@@ -1,0 +1,9 @@
+# Configuration file for FluxPulse algorithm
+
+# Define dataset directories
+data_dirs:
+  ancillary_dir: "data/"      
+  input_dir: "data/full_FLUXNET_formatted_data/"
+# Output directory
+output_dir: "results/FluxPulse_bias_correct_during_pulse_and_pre_pulse/"
+output_dir_during_pulse: "results/FluxPulse_bias_correct_during_pulse_only/"
