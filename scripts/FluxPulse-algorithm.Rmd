@@ -1,0 +1,371 @@
+---
+title: "FluxPulse-algorithm"
+author: "Ngoc Nguyen"
+date: "2025-02-19"
+output: html_document
+---
+```{r setup, include=FALSE}
+# Load necessary functions
+source("Functions.R")
+
+```
+
+# Bias-correct Reco during pulse events
+```{r}
+# ------------------------------------------------------------------------------
+# Load configuration file
+# ------------------------------------------------------------------------------
+
+config <- yaml::read_yaml("config.yaml")
+
+# ------------------------------------------------------------------------------
+# Define paths from config.yaml
+# ------------------------------------------------------------------------------
+ancillary_dir <- config$ancillary_dir
+input_dir <- config$input_dir
+output_dir <- config$output_dir
+output_dir_during_pulse <- config$output_dir_during_pulse
+
+# ------------------------------------------------------------------------------
+# Register the parallel backend with one fewer than all available cores
+# ------------------------------------------------------------------------------
+no_cores <- detectCores() - 1
+registerDoParallel(cores = no_cores)
+
+# ------------------------------------------------------------------------------
+# Read in manually identified pulse start/end data
+# ------------------------------------------------------------------------------
+pulse_events_df <- read.csv(file.path(ancillary_dir, "Birch_effect_Manual_Label.csv"))
+pulse_events_df$SOP <- as.Date(pulse_events_df$SOP)
+pulse_events_df$EOP <- as.Date(pulse_events_df$EOP)
+
+# Read in pulse decay statistics
+pulse_decay_stats_df <- read.csv(file.path(ancillary_dir, "Mean_Pulse_decay_stats.csv"))
+
+# ------------------------------------------------------------------------------
+# Directory containing original site-level data (uncorrected)
+# ------------------------------------------------------------------------------
+file_list <- list.files(input_dir)
+
+# ------------------------------------------------------------------------------
+# Process each file in parallel
+# ------------------------------------------------------------------------------
+metric_list <- foreach(j = seq_along(file_list), .packages = c("dplyr"), .combine = 'rbind') %dopar% {
+  
+  # ---------------------------------------------------------------------------
+  # Load site-level flux data
+  # ---------------------------------------------------------------------------
+  file_path <- paste0(input_dir, file_list[j])
+  flux_data <- read.csv(file_path, header = TRUE)
+  
+  # Convert/adjust time columns
+  flux_data <- time_convert(flux_data)
+  flux_data <- time_adjust(flux_data)
+  flux_data$Time <- as.Date(flux_data$Time)
+  
+  # Merge in daytime EF data (if relevant for your analysis)
+  df_EF <- daytimeEF_df(flux_data)
+  flux_data <- dplyr::full_join(flux_data, df_EF, by = "Time")
+  
+  # Identify the site name from the file name
+  site_name <- substr(file_list[j], start = 5, stop = 10)
+  
+  # Subset the pulse-events data for the current site
+  site_pulse_events <- subset(pulse_events_df, SITE_ID == site_name)
+  
+  # Extract the composite decay factor for this site
+  composite_decay_factor <- subset(pulse_decay_stats_df, SITE_ID == site_name)$decay_factor
+  
+  # Prepare to store corrected flux data for each pulse
+  corrected_pulse_list <- list()
+  
+  # ---------------------------------------------------------------------------
+  # Loop over each pulse event at this site
+  # ---------------------------------------------------------------------------
+  for(i in seq_len(nrow(site_pulse_events))) {
+    # Subset flux data to the interval between SOP and EOP
+    subset_mask <- as.Date(flux_data$Time) %in% seq.Date(site_pulse_events$SOP[i],
+                                                         site_pulse_events$EOP[i],
+                                                         by = "day")
+    flux_sub <- subset(flux_data, subset_mask & RECO_NT_VUT_REF > -9999 & NEE_VUT_REF_QC == 0)
+    
+    # Only proceed if we have sufficient unique days in this subset
+    if(length(unique(flux_sub$Time)) > 2) {
+      
+      # -----------------------------------------------------------------------
+      # Compute daily flux statistics (68th percentile) for NEE/Reco
+      # -----------------------------------------------------------------------
+      daily_flux_68 <- flux_sub %>%
+        dplyr::group_by(Time) %>%
+        dplyr::summarise(
+          NEE_68   = quantile_68(NEE_VUT_REF),
+          RECO_68  = quantile_68(RECO_NT_VUT_REF)
+        )
+      
+      # Compute daily flux statistics (98th percentile) for NEE/Reco
+      daily_flux_98 <- flux_sub %>%
+        dplyr::group_by(Time) %>%
+        dplyr::summarise(
+          NEE_98   = quantile_98(NEE_VUT_REF),
+          RECO_98  = quantile_98(RECO_NT_VUT_REF)
+        )
+      
+      # Add day index (days since start of pulse)
+      daily_flux_68$Day_index <- seq_len(nrow(daily_flux_68))
+      
+      # Initialize a column for the correction factor (defaults to 1)
+      daily_flux_68$correction_factor <- 1
+      
+      # -----------------------------------------------------------------------
+      # Attempt to fit a site-specific exponential decay to the daily NEE data
+      # -----------------------------------------------------------------------
+      tryCatch({
+        fit <- nls(data = daily_flux_68,
+                   NEE_68 ~ a * exp(-b * Day_index),
+                   start = list(a = max(daily_flux_68$NEE_68), b = 0.1))
+        
+        # Extract initial condition and decay factor from model
+        ini_condition    <- summary(fit)$coefficients[1, 1]
+        site_decay_rate  <- summary(fit)$coefficients[2, 1]
+        
+        # Extract p-values
+        ini_condition_p  <- summary(fit)$coefficients[1, 4]
+        site_decay_rate_p <- summary(fit)$coefficients[2, 4]
+        
+        # Compute correction factor based on significance
+        for(d in seq_len(nrow(daily_flux_68))) {
+          if(ini_condition_p < 0.1 & site_decay_rate_p < 0.1) {
+            # If significant, use this pulse’s fitted decay rate
+            correction_factor_0 <- max(daily_flux_98$NEE_98[1:2]) /
+              max(daily_flux_98$RECO_98[1:2]) * exp(site_decay_rate)
+            
+            daily_flux_68$correction_factor[d] <- correction_factor_0 * 
+              exp(-site_decay_rate * d)
+            
+          } else {
+            # If not significant, use composite decay factor
+            correction_factor_0 <- max(daily_flux_98$NEE_98[1:2]) /
+              max(daily_flux_98$RECO_98[1:2]) * exp(composite_decay_factor)
+            
+            daily_flux_68$correction_factor[d] <- correction_factor_0 * 
+              exp(-composite_decay_factor * d)
+          }
+        }
+        
+      }, error = function(err) {
+        # If the model fails, default to composite decay factor
+        for(d in seq_len(nrow(daily_flux_68))) {
+          correction_factor_0 <- max(daily_flux_98$NEE_98[1:2]) /
+            max(daily_flux_98$RECO_98[1:2]) * exp(composite_decay_factor)
+          
+          daily_flux_68$correction_factor[d] <- correction_factor_0 * 
+            exp(-composite_decay_factor * d)
+        }
+      })
+      
+      # -----------------------------------------------------------------------
+      # Merge correction factors with the original subset
+      # -----------------------------------------------------------------------
+      corr_factor_df <- daily_flux_68[, c("Time", "correction_factor")]
+      flux_sub_corr <- list(flux_sub, corr_factor_df) %>%
+        Reduce(f = dplyr::full_join, .)
+      
+      # -----------------------------------------------------------------------
+      # Compute corrected Reco for this pulse
+      # -----------------------------------------------------------------------
+      flux_sub_corr$RECO_FluxPulse <- flux_sub_corr$RECO_NT_VUT_REF * flux_sub_corr$correction_factor
+      
+      # Store in our list
+      corrected_pulse_list[[i]] <- flux_sub_corr
+    } 
+  }
+  
+  # ---------------------------------------------------------------------------
+  # Combine all pulse-corrected data frames into a single data frame
+  # ---------------------------------------------------------------------------
+  all_corrected_flux <- do.call(rbind, corrected_pulse_list)
+  
+  # Filter out extreme outliers in the correction factor
+  all_corrected_flux_filtered <- subset(all_corrected_flux,
+                                        correction_factor < 100,
+                                        select = c("Time_full", "correction_factor", "RECO_FluxPulse"))
+  
+  # Merge corrected flux data back into the full flux_data
+  final_flux_df <- list(all_corrected_flux_filtered, flux_data) %>%
+    Reduce(f = dplyr::full_join, .)
+  
+  # Where RECO_FluxPulse is NA, revert to original Reco
+  na_idx <- which(is.na(final_flux_df$RECO_FluxPulse))
+  final_flux_df$RECO_FluxPulse[na_idx] <- final_flux_df$RECO_NT_VUT_REF[na_idx]
+  
+  # ---------------------------------------------------------------------------
+  # Mark pulse dates (for reference/labeling in final output)
+  # ---------------------------------------------------------------------------
+  all_pulse_dates <- c()
+  for(i in seq_len(nrow(site_pulse_events))) {
+    date_seq <- seq.Date(site_pulse_events$SOP[i],
+                         site_pulse_events$EOP[i],
+                         by = "day")
+    all_pulse_dates <- c(all_pulse_dates, date_seq)
+  }
+  
+  # Create a binary column indicating whether each date is a pulse date
+  final_flux_df$pulse_cluster <- 0
+  final_flux_df$pulse_cluster[which(final_flux_df$Time %in% all_pulse_dates)] <- 1
+  
+  # ---------------------------------------------------------------------------
+  # Write out final CSV for this site
+  # ---------------------------------------------------------------------------
+  write.csv(final_flux_df, paste0(out_dir_during_pulse, site_name, ".csv"), row.names = FALSE)
+  
+  # Return iteration index (not used, but consistent with foreach)
+  return(j)
+  
+}
+```
+
+
+
+
+## Bias-correct Reco during the pre-pulse period
+```{r}
+
+# ------------------------------------------------------------------------------
+# Directory containing previously bias-corrected data
+# ------------------------------------------------------------------------------
+input_dir_pre = out_dir_during_pulse
+file_list_pre <- list.files(input_dir_pre)
+
+# ------------------------------------------------------------------------------
+# Fix pre-pulse bias in 34 sites (using parallel)
+# ------------------------------------------------------------------------------
+pre_pulse_metric_list <- foreach(j = seq_along(file_list_pre), 
+                                 .packages = c("dplyr"), 
+                                 .combine = 'rbind') %dopar% {
+  # ---------------------------------------------------------------------------
+  # Load site-level data that was already pulse-corrected
+  # ---------------------------------------------------------------------------
+  file_path <- paste0(input_dir_pre, file_list_pre[j])
+  flux_data <- read.csv(file_path, header = TRUE)
+  
+  # Extract site name from file name
+  site_name <- substr(file_list_pre[j], start = 1, stop = 6)
+  
+  # Subset the pulse-events data for the current site
+  site_pulse_events <- subset(pulse_events_df, SITE_ID == site_name)
+  
+  # ---------------------------------------------------------------------------
+  # Re-run nighttime partitioning to obtain temperature sensitivity (E0)
+  # Reichstein et al., 2005 method
+  # ---------------------------------------------------------------------------
+  # Only nighttime NEE flux is used for training, since nighttime NEE is assumed ~ Reco
+  nighttime_mask <- (flux_data$RECO_NT_VUT_REF > -9999 & 
+                     flux_data$NEE_VUT_REF_QC == 0 &
+                     flux_data$TS_F_MDS_1_QC == 0 & 
+                     flux_data$NIGHT == 1)
+  train_data <- subset(flux_data, nighttime_mask)
+  
+  # Try the rolling regression for E0
+  # If this fails, we skip
+  tryCatch ({
+    temp_regression_df <- temp_regression(train_data, 15, 5)
+    # Compute site-level temperature sensitivity
+    site_E0_est <- E0_calculation(temp_regression_df)
+    
+    # Prepare to store bias-corrected values for pre-pulse intervals
+    pre_pulse_corrected_list <- list()
+    
+    # -------------------------------------------------------------------------
+    # Loop over each pulse event
+    # -------------------------------------------------------------------------
+    for(i in seq_len(nrow(site_pulse_events))) {
+      # Pre-pulse period length = # of days in the pulse
+      pre_pulse_length <- length(seq.Date(site_pulse_events$SOP[i],
+                                          site_pulse_events$EOP[i],
+                                          by = "day"))
+      
+      # Identify pre-pulse intervals: (SOP - pre_pulse_length) : (SOP - 1)
+      pre_pulse_seq <- seq.Date(site_pulse_events$SOP[i] - pre_pulse_length,
+                                site_pulse_events$SOP[i] - 1,
+                                by = "day")
+      
+      # Subset nighttime data in the pre-pulse interval
+      nighttime_mask_sub <- (as.Date(flux_data$Time) %in% pre_pulse_seq &
+                             flux_data$RECO_NT_VUT_REF > -9999 &
+                             flux_data$NEE_VUT_REF_QC == 0 &
+                             flux_data$TS_F_MDS_1_QC == 0 &
+                             flux_data$NIGHT == 1)
+      
+      flux_pre_night <- subset(flux_data, nighttime_mask_sub)
+      
+      # Subset all data (day+night) in pre-pulse interval
+      full_mask_sub <- (as.Date(flux_data$Time) %in% pre_pulse_seq &
+                        flux_data$RECO_NT_VUT_REF > -9999 &
+                        flux_data$NEE_VUT_REF_QC == 0 &
+                        flux_data$TS_F_MDS_1_QC == 0)
+      
+      flux_pre_full <- subset(flux_data, full_mask_sub)
+      
+      # If any day in this pre-pulse has pulse_cluster == 1, skip correction
+      if(!any(flux_pre_full$pulse_cluster == 1)) {
+        # Run a 2-day rolling window for R0 to avoid short intervals
+        reference_respiration_df <- R0_regression(flux_pre_night, site_E0_est, 2, 1)
+        
+        # Interpolate R0 for the full pre-pulse window
+        reference_respiration_interp <- R0_interpolate(flux_pre_full, reference_respiration_df)
+        
+        # Compute RECO_NT_pre_pulse using the newly estimated E0 and R0
+        reference_respiration_interp$RECO_NT_pre_pulse <- exp(site_E0_est * 
+          (1/(Tref - T0) - 1/((reference_respiration_interp$TS_F_MDS_1 + CtoK) - T0))) * 
+          (reference_respiration_interp$R0_interpolated)
+        
+        reference_respiration_interp$E0_est <- site_E0_est
+        
+        # Store
+        pre_pulse_corrected_list[[i]] <- reference_respiration_interp
+      }
+    }
+    
+    # -------------------------------------------------------------------------
+    # Combine all corrected pre-pulse data frames
+    # -------------------------------------------------------------------------
+    combined_pre_pulse_corrected <- do.call(rbind, pre_pulse_corrected_list)
+    
+    # Keep only relevant columns
+    combined_pre_pulse_corrected_sub <- subset(combined_pre_pulse_corrected,
+                                               select = c("Time_full", 
+                                                          "RECO_NT_pre_pulse", 
+                                                          "R0_interpolated", 
+                                                          "E0_est"))
+    
+    # Merge bias-corrected pre-pulse data with the original flux_data
+    final_pre_pulse_flux_df <- list(combined_pre_pulse_corrected_sub, flux_data) %>%
+      Reduce(f = dplyr::full_join, .)
+    
+    # Update RECO_FluxPulse column to use pre-pulse corrections where available
+    update_idx <- which(!is.na(final_pre_pulse_flux_df$RECO_NT_pre_pulse))
+    final_pre_pulse_flux_df$RECO_FluxPulse[update_idx] <-
+      final_pre_pulse_flux_df$RECO_NT_pre_pulse[update_idx]
+    
+    # -------------------------------------------------------------------------
+    # Write out the final corrected data
+    # -------------------------------------------------------------------------
+    write.csv(final_pre_pulse_flux_df,
+              file = paste0(out_dir, site_name, ".csv"),
+              row.names = FALSE)
+    
+  }, error = function(err) {
+    # If any major step fails, we skip to the next file
+    message("Skipping site: ", site_name, " due to error: ", err)
+  })
+  
+  return(j)  # For foreach consistency; not otherwise used
+}
+```
+
+
+
+
+
+
+
