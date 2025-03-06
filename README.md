@@ -22,7 +22,7 @@ To apply FluxPulse v1.0 algorithm into your data, either refer to our GitHub or 
 To report errors/bugs or inquire about the datasets, please create GitHub pull requests or contact the corresponding authors (Ngoc Nguyen (ngoc.nguyen@berkeley.edu) and Trevor F. Keenan (trevorkeenan@berkeley.edu))
 
 # Paper Publication
-To be updated
+To be updated (Under Review by Nature Geoscience)
 
 # Datasets used to generate main figures in the paper: 
 - Folder: data/figure_data/
