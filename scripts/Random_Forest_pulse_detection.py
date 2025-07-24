@@ -67,6 +67,9 @@ def remove_bad_pulse(group):
 
 def main():
     # Set paths
+    #combine data together
+    #combine_df.csv is the combined .csv of all FluxPulse final products in 34 sites. Access the individual site data via ... and the combine_df.csv via ...:  
+    
     data_path = "data/combined_df.csv"
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
