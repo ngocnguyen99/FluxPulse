@@ -14,9 +14,9 @@ The data is open-access to the public. Please cite this article if you use FluxP
 To download the full FluxPulse v1.0 bias-corrected datasets, go to this link: https://www.keenangroup.info/index.html
 
 # Process your own data
-To apply FluxPulse v1.0 algorithm into your data, either refer to our GitHub or contact the corresponding authors for customized processing: 
+To apply FluxPulse v1.0 algorithm into your data, either refer to our GitHub or contact the corresponding authors for customized processing (we hope to respond to your request within 3-5 business days): 
 - Set up configuration: Modify config.yaml to specify your file directories.
-- Run the analysis: Open scripts/FluxPulse-algorithm.Rmd in RStudio and Knit to generate results (Further instructions can be found in the subfolders).
+- Run the analysis: Open `scripts/FluxPulse-algorithm.Rmd` in RStudio and Knit to generate results (Further instructions can be found in the subfolders).
 
 # Report errors/bugs and collaboration
 To report errors/bugs or inquire about the datasets, please create GitHub pull requests or contact the corresponding authors (Ngoc Nguyen (ngoc.nguyen@berkeley.edu) and Trevor F. Keenan (trevorkeenan@berkeley.edu))
