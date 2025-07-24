@@ -5,5 +5,6 @@ data_dirs:
   ancillary_dir: "data/"      
   input_dir: "data/full_FLUXNET_formatted_data/"
 # Output directory
-output_dir: "results_final/"
-output_dir_during_pulse: "results_step1/"
+output_dir: "results/results_FluxPulse_bias_correction_during_all_time/"
+output_dir_during_pulse: "results/FluxPulse_bias_correction_during_pulse/"
+output_dir_ML_detection: "results/ML_detection/"
