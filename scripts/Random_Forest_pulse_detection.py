@@ -1,345 +1,158 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Basic Setup
-
-# In[1]:
-
-
-## Import libraries and basic setups
-import glob
+# === Libraries ===
 import os
-import sys
-import xml.etree.ElementTree as ET
-import json
-import time
-import pytz
-import datetime as dt
-
-## util libs
 import pandas as pd
 import numpy as np
-import copy
 import matplotlib.pyplot as plt
-from collections import defaultdict
-import ast
-
-##import sklearn and time 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    accuracy_score, recall_score, precision_score, f1_score,
-    roc_auc_score
-)
-from sktime.classification.interval_based import TimeSeriesForestClassifier
-from sktime.datasets import load_arrow_head
-from sktime.forecasting.model_selection import temporal_train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-
-from sklearn.linear_model import LinearRegression
-
-#Import function to calculate time run
+from joblib import dump, load
 import time
 
-def your_function():
-    time.sleep(1)
+# === Custom Functions ===
 
-#Import function to calculate Initial_EF and Pre_pulse_EF 
 def Index_EF(x):
-    # Ensure 'Time' is datetime
     x['Time'] = pd.to_datetime(x['Time']).dt.floor('D')
-
-    # Group by the 'Time' column and calculate the mean for each day
     daily_mean = x.groupby('Time')['Daily_EF'].mean().reset_index()
-
-    # Set 'Time' as the DataFrame index again for rolling calculation
     daily_mean.set_index('Time', inplace=True)
 
-    # Calculate the rolling mean of the past 14 days, excluding the current day
     daily_mean['Pre_pulse_EF'] = daily_mean['Daily_EF'].rolling(window=15, min_periods=10).mean().shift(2)
-
-
-    # Calculate the rolling mean of 2 on the shifted data, then shift upwards by 1 to align
     daily_mean['Before_EF'] = daily_mean['Daily_EF'].rolling(window=2, min_periods=1).mean().shift(1)
-    daily_mean['After_EF'] = daily_mean['Daily_EF'].rolling(window=2, min_periods = 1).mean().shift(-1)
-
+    daily_mean['After_EF'] = daily_mean['Daily_EF'].rolling(window=2, min_periods=1).mean().shift(-1)
     daily_mean['Initial_EF'] = daily_mean['After_EF'] - daily_mean['Before_EF']
 
-    #merge 2 df
-    x_final = pd.merge(x, daily_mean[['Initial_EF', 'Pre_pulse_EF', 'After_EF']], on='Time', how='outer')
-    #drop na value again
-    x_final = x_final.dropna()
-    
-    return (x_final)
-
-
+    x_final = pd.merge(x, daily_mean[['Initial_EF', 'Pre_pulse_EF', 'After_EF']], on='Time', how='outer').dropna()
+    return x_final
 
 def change_NEE(x):
-    # Ensure 'Time' is datetime
     x['Time'] = pd.to_datetime(x['Time']).dt.floor('D')
-
-    # Group by the 'Time' column and calculate the mean for each day
     daily_mean = x.groupby('Time')['NEE_VUT_REF'].mean().reset_index()
-
-    # Set 'Time' as the DataFrame index again for rolling calculation
     daily_mean.set_index('Time', inplace=True)
-    # Calculate the rolling mean of the past 14 days, excluding the current day
+
     daily_mean['Pre_pulse_NEE'] = daily_mean['NEE_VUT_REF'].rolling(window=3, min_periods=1).mean().shift(2)
-
-    # Calculate the rolling mean of 2 on the shifted data, then shift upwards by 1 to align
     daily_mean['Before_NEE'] = daily_mean['NEE_VUT_REF'].rolling(window=2, min_periods=1).mean().shift(1)
-    daily_mean['After_NEE'] = daily_mean['NEE_VUT_REF'].rolling(window=2, min_periods = 1).mean().shift(-1)
-
+    daily_mean['After_NEE'] = daily_mean['NEE_VUT_REF'].rolling(window=2, min_periods=1).mean().shift(-1)
     daily_mean['Initial_NEE'] = daily_mean['After_NEE'] - daily_mean['Before_NEE']
     daily_mean['Mean_NEE'] = daily_mean['NEE_VUT_REF']
 
-    #merge 2 df
-    x_final = pd.merge(x, daily_mean[['Initial_NEE', 'Pre_pulse_NEE', 'Mean_NEE', "After_NEE"]], on='Time', how='outer')
-    #drop na value again
-    x_final = x_final.dropna()
-    
-    return (x_final)
-
-
-from joblib import dump, load
+    x_final = pd.merge(x, daily_mean[['Initial_NEE', 'Pre_pulse_NEE', 'Mean_NEE', 'After_NEE']], on='Time', how='outer').dropna()
+    return x_final
 
 def create_sop_eop_df(df):
-    # Ensure 'Time' column is in datetime format and sort by 'Time'
-    #df['Time'] = pd.to_datetime(df['Time'])
-    #df.sort_values('Time', inplace=True)
-
-    # Detect changes in pulse status
     df['shifted'] = df['pulse_pred'].shift(1)
     df['next_shifted'] = df['pulse_pred'].shift(-1)
-    
-    # Identify changes where a pulse starts or ends
     df['change_start'] = (df['pulse_pred'] == 1) & (df['shifted'] != 1)
     df['change_end'] = (df['pulse_pred'] == 1) & (df['next_shifted'] != 1)
 
-    # Start of Pulse (SOP): Where pulse starts
     df['SOP'] = df['Time'].where(df['change_start'])
-
-    # End of Pulse (EOP): Where pulse ends
     df['EOP'] = df['Time'].where(df['change_end'])
 
-    # Compile SOP and EOP into a new DataFrame
     sop_eop_df = pd.DataFrame({
         'SOP': df['SOP'].dropna().reset_index(drop=True),
         'EOP': df['EOP'].dropna().reset_index(drop=True)
     })
-
-    # Remove rows where SOP equals EOP
     sop_eop_df = sop_eop_df[sop_eop_df['SOP'] != sop_eop_df['EOP']]
     return sop_eop_df
 
 def remove_bad_pulse(group):
     threshold = 0.5
-    total_count = group.shape[0]
     pulse_count = group['pulse_pred'].sum()
-    pulse_day = 1 if (pulse_count / total_count) > threshold else 0
-    group['pulse_pred'] = pulse_day
+    group['pulse_pred'] = 1 if (pulse_count / group.shape[0]) > threshold else 0
     return group
 
-
-# In[3]:
-
-
-# Change to the specified directory
-os.chdir(/data)
-
-
-# # Running random forest using multiple sites
-
-# In[3]:
-
-
-combined_df = pd.read_csv(combined_df.csv')
-
-
-# In[4]:
-
-
-#site with fewer than 5 years
-site_few = ['AU-Dry', 'AU-Gin', 'AU-Rig', 'US-FR2', 'US-xNG']
-#sites with few birch effects (< 20)
-site_few_BE = ['AU-Dry', 'US-xNG', 'AU-Gin', 'US-FR2', 'AU-DaS']
-
-
-# In[6]:
-
-
-#Filter for original data points
-combined_df_sub = combined_df[(combined_df["NEE_VUT_REF_QC"] == 0) & (~combined_df['Location'].isin(site_few)) & (~combined_df['Location'].isin(site_few_BE))]
-
-#Subset df for useful features and drop all NAs
-features = ["Time_full", "Location", "Year", "Month", "Time", 'RECO_NT_VUT_REF', "GPP_NT_VUT_REF", "NEE_VUT_REF", "Daily_EF", "P_ERA", "pulse_cluster"]
-combined_df_sub_fil = combined_df_sub[features].dropna()
-
-
-# In[92]:
-
-
-#Calculate rewetting intensity as change_EF
-df_final = combined_df_sub_fil.groupby('Location').apply(Index_EF)
-
-
-# In[93]:
-
-
-#calculate pulse intensity as change_NEE
-df_final_NEE = combined_df_sub_fil.groupby('Location').apply(change_NEE)
-
-
-# In[94]:
-
-
-#add pulse intensity and rewetting intensity into the final csv
-df_final['Initial_NEE'] = df_final_NEE['Initial_NEE'] 
-df_final['Pre_pulse_NEE'] = df_final_NEE['Pre_pulse_NEE'] 
-df_final['Mean_NEE'] = df_final_NEE['Mean_NEE'] 
-
-
-# In[95]:
-
-
-#rename index column 
-df_final.index.name = "Location_index"
-df_final.reset_index(drop=True, inplace=True)
-
-
-# In[96]:
-
-
-df_encoded = df_final.drop(['Time_full', 'GPP_NT_VUT_REF'], axis = 1)
-
-
-# In[97]:
-
-
-#subset the dataset 
-df_final_sub = df_encoded
-# Identify the latest year for each location
-latest_year_per_location = df_final_sub.groupby('Location')['Year'].max()
-
-# Splitting the dataset
-training_validating = pd.DataFrame()
-testing_data = pd.DataFrame()
-
-for location, latest_year in latest_year_per_location.items():
-    # Training set: Exclude the latest year for each location
-    training_validating = pd.concat([training_validating, df_final_sub[(df_final_sub['Location'] == location) & (df_final_sub['Year'] < latest_year - 2)]])
-    
-    # Testing set: Include only the latest year for each location
-    testing_data = pd.concat([testing_data, df_final_sub[(df_final_sub['Location'] == location) & (df_final_sub['Year'].isin([latest_year, latest_year - 1, latest_year - 2]))]])
-
-
-# In[99]:
-
-
-#since this is imbalance dataset (more non pulse events compared to pulse events, 
-#so randomly remove 70% of non pulse events)
-zero_rows = training_validating[training_validating['pulse_cluster'] == 0]
-
-#Randomly sample 70% of these zero rows
-retained_zero_rows = zero_rows.sample(frac=0.3, random_state=42) 
-
-#Select all rows where 'pulse_cluster' is not 0
-non_zero_rows = training_validating[training_validating['pulse_cluster'] != 0]
-
-#Concatenate the retained zero rows with non-zero rows
-training_validating = pd.concat([retained_zero_rows, non_zero_rows])
-
-
-# In[100]:
-
-
-#Prepare training, validating, and testing set
-import random
-random.seed(710)
-X_train_valid = training_validating.drop(['Location', 'pulse_cluster', 'Year', 'Time'], axis = 1).to_numpy()
-y_train_valid = training_validating['pulse_cluster'].to_numpy()
-
-X_train, X_valid, y_train, y_valid = train_test_split(X_train_valid, y_train_valid, stratify = y_train_valid)
-
-
-# In[101]:
-
-
-#Split the data and run on validation test
-start_time = time.time()
-
-# Calculate class weights, many ways to do this, one is using sklearn's compute_class_weight
-class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
-weights = {i: class_weights[i] for i in range(len(class_weights))}
-
-# Initialize RandomForestClassifier with class_weight parameter
-classifier_full = RandomForestClassifier(random_state=100, class_weight=weights)
-classifier_full.fit(X_train, y_train)
-
-y_pred = classifier_full.predict(X_valid)
-y_pred_score = classifier_full.predict_proba(X_valid)[:, 1]
-
-end_time = time.time()
-print(f"Function ran for {end_time - start_time} seconds.")
-
-
-#applying the trained model on unseen testing set
-#predict on testing set
-location_list = []
-
-df_all = []
-
-for i in df_final_sub['Location'].unique():
-    data_sub = testing_data[testing_data['Location'] == i]
-    X_test = data_sub.drop(['Location', 'pulse_cluster', 'Year', 'Time'], axis = 1).to_numpy() 
-    y_test = data_sub["pulse_cluster"].to_numpy()
-    
-    y_test_pred = classifier_full.predict(X_test)
-    
-    data_sub['pulse_pred'] = y_test_pred
-    df_all.append(data_sub)
-    location_list.append(i)
-
-
-# In[107]:
-
-
-#remove bad predicted pulses (such as short pulses + overlapped pulses)
-ML_detect = []
-for i in range(28):
-    df_sub = df_all[i].reset_index().drop(columns='index')
-    df = create_sop_eop_df(df_sub.groupby('Time').apply(remove_bad_pulse))
-    df['SITE_ID'] = df_sub['Location'].unique()[0]
-    ML_detect.append(df)
-    
-ML_detect_merge = pd.concat(ML_detect, ignore_index=True)
-
-
-# In[108]:
-
-
-#Save the predicted Start of Pulse (SOP)
-out_put_dir = out_put_dir_ML_detection
-ML_detect_merge.to_csv(file.path(output_dir, "ML_detect.csv")))
-
-
-# In[ ]:
-
-
-#feature importance
-feature_importances = classifier_full.feature_importances_
-feature_names = training_validating.drop(['Location', 'pulse_cluster', 'Year', 'Time'], axis = 1).columns
-
-importance_scores = zip(feature_names, feature_importances)
-sorted_features = sorted(importance_scores, key=lambda x: x[1], reverse=True)
-
-for feature, importance in sorted_features:
-    print(f"{feature}: {importance}")
-pd.DataFrame(sorted_features).to_csv(ML_detect/feature_score.csv, index=False)
-
-
-# In[ ]:
-
-
-
-
+# === Main Analysis ===
+
+def main():
+    # Set paths
+    data_path = "data/combined_df.csv"
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Load and filter data
+    combined_df = pd.read_csv(data_path)
+    site_few = ['AU-Dry', 'AU-Gin', 'AU-Rig', 'US-FR2', 'US-xNG']
+    site_few_BE = ['AU-Dry', 'US-xNG', 'AU-Gin', 'US-FR2', 'AU-DaS']
+
+    combined_df_sub = combined_df[
+        (combined_df["NEE_VUT_REF_QC"] == 0) &
+        (~combined_df['Location'].isin(site_few)) &
+        (~combined_df['Location'].isin(site_few_BE))
+    ]
+
+    features = ["Time_full", "Location", "Year", "Month", "Time", 'RECO_NT_VUT_REF', 
+                "GPP_NT_VUT_REF", "NEE_VUT_REF", "Daily_EF", "P_ERA", "pulse_cluster"]
+    combined_df_sub_fil = combined_df_sub[features].dropna()
+
+    df_final = combined_df_sub_fil.groupby('Location').apply(Index_EF)
+    df_final_NEE = combined_df_sub_fil.groupby('Location').apply(change_NEE)
+
+    for col in ['Initial_NEE', 'Pre_pulse_NEE', 'Mean_NEE']:
+        df_final[col] = df_final_NEE[col]
+
+    df_final.reset_index(drop=True, inplace=True)
+    df_encoded = df_final.drop(['Time_full', 'GPP_NT_VUT_REF'], axis=1)
+
+    # Split by year per location
+    latest_year_per_location = df_encoded.groupby('Location')['Year'].max()
+    training_validating, testing_data = pd.DataFrame(), pd.DataFrame()
+
+    for location, latest_year in latest_year_per_location.items():
+        train_data = df_encoded[(df_encoded['Location'] == location) & (df_encoded['Year'] < latest_year - 2)]
+        test_data = df_encoded[(df_encoded['Location'] == location) & (df_encoded['Year'].isin([latest_year, latest_year - 1, latest_year - 2]))]
+        training_validating = pd.concat([training_validating, train_data])
+        testing_data = pd.concat([testing_data, test_data])
+
+    # Balance training data
+    zero_rows = training_validating[training_validating['pulse_cluster'] == 0]
+    retained_zero_rows = zero_rows.sample(frac=0.3, random_state=42)
+    non_zero_rows = training_validating[training_validating['pulse_cluster'] != 0]
+    training_validating = pd.concat([retained_zero_rows, non_zero_rows])
+
+    # Split features and labels
+    X_train_valid = training_validating.drop(['Location', 'pulse_cluster', 'Year', 'Time'], axis=1).to_numpy()
+    y_train_valid = training_validating['pulse_cluster'].to_numpy()
+    X_train, X_valid, y_train, y_valid = train_test_split(X_train_valid, y_train_valid, stratify=y_train_valid)
+
+    # Train classifier
+    start_time = time.time()
+    class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
+    weights = {i: class_weights[i] for i in range(len(class_weights))}
+
+    classifier_full = RandomForestClassifier(random_state=100, class_weight=weights)
+    classifier_full.fit(X_train, y_train)
+    y_pred = classifier_full.predict(X_valid)
+
+    print(f"Validation accuracy: {np.mean(y_pred == y_valid):.2f}")
+    print(f"Training runtime: {time.time() - start_time:.2f} seconds")
+
+    # Predict on test set
+    df_all = []
+    for location in df_encoded['Location'].unique():
+        data_sub = testing_data[testing_data['Location'] == location]
+        X_test = data_sub.drop(['Location', 'pulse_cluster', 'Year', 'Time'], axis=1).to_numpy()
+        data_sub['pulse_pred'] = classifier_full.predict(X_test)
+        df_all.append(data_sub)
+
+    # Detect SOP/EOP
+    ML_detect = []
+    for df_sub in df_all:
+        df_sub = df_sub.reset_index(drop=True)
+        sop_eop = create_sop_eop_df(df_sub.groupby('Time').apply(remove_bad_pulse))
+        sop_eop['SITE_ID'] = df_sub['Location'].iloc[0]
+        ML_detect.append(sop_eop)
+
+    ML_detect_merge = pd.concat(ML_detect, ignore_index=True)
+    ML_detect_merge.to_csv(os.path.join(output_dir, "ML_detect.csv"), index=False)
+
+    # Feature importance
+    feature_names = training_validating.drop(['Location', 'pulse_cluster', 'Year', 'Time'], axis=1).columns
+    importance_scores = sorted(zip(feature_names, classifier_full.feature_importances_), key=lambda x: x[1], reverse=True)
+    pd.DataFrame(importance_scores, columns=['Feature', 'Importance']).to_csv(os.path.join(output_dir, "feature_scores.csv"), index=False)
+
+    print("Pipeline completed successfully.")
+
+if __name__ == "__main__":
+    main()
