@@ -23,8 +23,8 @@ config <- yaml::read_yaml("config.yaml")
 # ------------------------------------------------------------------------------
 ancillary_dir <- config$ancillary_dir
 input_dir <- config$input_dir
-output_dir <- config$output_dir
-output_dir_during_pulse <- config$output_dir_during_pulse
+output_dir <- config$output_dir_bias_correction
+output_dir_during_pulse <- config$output_dir_bias_correction_during_pulse
 
 # ------------------------------------------------------------------------------
 # Register the parallel backend with one fewer than all available cores
