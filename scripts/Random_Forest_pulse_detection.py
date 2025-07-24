@@ -320,7 +320,7 @@ ML_detect_merge = pd.concat(ML_detect, ignore_index=True)
 
 #Save the predicted Start of Pulse (SOP)
 out_put_dir = out_put_dir_ML_detection
-ML_detect_merge.to_csv(out_put_dir/ML_detect.csv)
+ML_detect_merge.to_csv(file.path(output_dir, "ML_detect.csv")))
 
 
 # In[ ]:
