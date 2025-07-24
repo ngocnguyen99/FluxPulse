@@ -11,7 +11,7 @@ FluxPulse v1.0 performance across 34 global dryland flux sites: https://ngoc-ngu
 The data is open-access to the public. Please cite this article if you use FluxPulse data in your research/projects.
 
 # Download data
-To download the full FluxPulse v1.0 bias-corrected datasets, go to this link: https://www.keenangroup.info/index.html
+To download the full FluxPulse v1.0 bias-corrected datasets, go to this link: https://berkeley.box.com/s/h3lwyk3a7cpv0dh0wepwo6ja0sv015iq
 
 # Process your own data
 To apply FluxPulse v1.0 algorithm into your data, either refer to our GitHub or contact the corresponding authors for customized processing (we hope to respond to your request within 3-5 business days): 
