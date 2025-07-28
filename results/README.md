@@ -1,2 +1,2 @@
-- This folder saves the final delivarables from FluxPulse pulse bias-correction algorithm and Random Forest (RF) pulse detection algorithm.
-- Access the FluxPulse final deliverables via https://berkeley.box.com/s/h3lwyk3a7cpv0dh0wepwo6ja0sv015iq
+- This folder will save the final deliverables from FluxPulse pulse bias-correction algorithm and Random Forest (RF) pulse detection algorithm from the posted code files.
+- Access the full FluxPulse final deliverables via https://berkeley.box.com/s/h3lwyk3a7cpv0dh0wepwo6ja0sv015iq
